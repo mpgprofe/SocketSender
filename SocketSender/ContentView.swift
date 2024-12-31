@@ -7,52 +7,142 @@
 
 import SwiftUI
 import Network
+import UIKit
 
 struct ContentView: View {
-    @State var ipAddress:String = ""
-    @State var text:String = ""
-    @FocusState var isIPActive
-    @FocusState var isTextActive
+    @State private var ipAddress: String = "192.168.100.154" // Dirección IP por defecto
+    @State private var port: String = "8080" // Puerto por defecto
+    @State private var selectedImage: UIImage? = nil // Imagen seleccionada
+    @State private var isImagePickerPresented = false // Flag para presentar el selector de imagen
+    @FocusState private var isIPActive: Bool // Usar FocusState para manejar el enfoque en IP
+    @FocusState private var isPortActive: Bool // Usar FocusState para manejar el enfoque en el puerto
     let client = Client()
+    
     var body: some View {
-        NavigationStack{
-            VStack(alignment: .leading) {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 20) {
                 
+                // Campo de IP
                 TextField("Server IP Address", text: $ipAddress)
                     .keyboardType(.numbersAndPunctuation)
-                    .focused($isIPActive)
+                    .focused($isIPActive) // Usamos el FocusState aquí
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .padding(.bottom, 10)
+                
+                // Campo de Puerto
+                TextField("Port", text: $port)
+                    .keyboardType(.numberPad)
+                    .focused($isPortActive) // Usamos el FocusState aquí
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .padding(.bottom, 10)
                 
                 Divider()
                 
-                TextField("Text", text: $text)
-                    .focused($isTextActive)
+                // Mostrar la imagen seleccionada
+                if let image = selectedImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 200, height: 200)
+                        .padding(.bottom, 10)
+                } else {
+                    Text("No image selected")
+                        .padding(.bottom, 10)
+                }
+
+                // Botón para seleccionar la imagen
+                Button(action: {
+                    isImagePickerPresented.toggle()
+                }) {
+                    Text("Select Image")
+                        .font(.title2)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                }
                 
                 Divider()
-                    
-                Button{
-                    client.connectToServer(host: ipAddress, port: 8080)
-                    client.sendText(text)
-                } label: {
-                    Text("Send Text")
-                }.buttonStyle(.borderedProminent)
+
+                // Botón para enviar la imagen al servidor
+                Button(action: {
+                    guard let image = selectedImage else { return }
+                    if let imageData = image.jpegData(compressionQuality: 0.8) {
+                        let host = ipAddress
+                        let portNumber = UInt16(port) ?? 8080
+                        client.connectToServer(host: host, port: portNumber)
+                        client.sendImage(imageData, fileName: "image.jpg", quantity: 1)
+                    }
+                }) {
+                    Text("Send Image")
+                        .font(.title2)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.green)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                }
                 
             }
             .padding()
-            .toolbar{
+            .navigationTitle("Image Sender")
+            .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if isIPActive ||  isTextActive{
-                        Button{
+                    if isIPActive || isPortActive {
+                        Button(action: {
                             isIPActive = false
-                            isTextActive = false
-                        } label: {
-                            Label("Dismiss", systemImage: "keyboard.chevron.compact.down.fill").labelStyle(.iconOnly)
+                            isPortActive = false
+                        }) {
+                            Label("Dismiss", systemImage: "keyboard.chevron.compact.down.fill")
+                                .labelStyle(.iconOnly)
                         }
                     }
                 }
             }
-            .navigationTitle("Socket")
-            .navigationBarTitleDisplayMode(.inline)
         }
+        .sheet(isPresented: $isImagePickerPresented) {
+            ImagePicker(selectedImage: $selectedImage)
+        }
+    }
+}
+
+struct ImagePicker: UIViewControllerRepresentable {
+    @Binding var selectedImage: UIImage?
+
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        var parent: ImagePicker
+
+        init(parent: ImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.selectedImage = image
+            }
+            picker.dismiss(animated: true)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        return Coordinator(parent: self)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        picker.allowsEditing = false
+        picker.sourceType = .photoLibrary
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {
+        // Actualización de la vista si es necesario (no se requiere en este caso)
     }
 }
 
@@ -74,24 +164,68 @@ class Client {
         connection?.start(queue: .main)
     }
 
+    func sendImage(_ imageData: Data, fileName: String, quantity: Int) {
+            guard let connection = connection else { return }
 
-    func sendText(_ text: String) {
-        guard let connection = connection, let socketData = text.data(using: .utf8) else { return }
+            // 1. Enviar el nombre del archivo (UTF-8)
+            guard let fileNameData = fileName.data(using: .utf8) else { return }
         
-        var dataSize = UInt32(socketData.count).bigEndian // Convert to network byte order
-        let sizeData = Data(bytes: &dataSize, count: MemoryLayout<UInt32>.size)
         
-        // Combine the size and text data
-        let fullData = sizeData + socketData //This might be the Windows socket data issue!
-
+   
+                    // La longitud de la cadena en UTF-8 (2 bytes)
+                    let length = UInt16(fileNameData.count)
+                    var lengthData = Data()
+                    withUnsafeBytes(of: length.bigEndian) { lengthData.append(contentsOf: $0) }
+                    
+                    // Enviar primero la longitud (2 bytes) y luego los datos de la cadena
+                    let fullData = lengthData + fileNameData
+        
+        
+        
+        
+            //Enviamos el nombre del archivo:
         connection.send(content: fullData, completion: .contentProcessed { error in
             if let error = error {
-                print("Failed to send text: \(error)")
+                print("Failed to send initial data (name + quantity): \(error)")
             } else {
-                print("Text sent successfully!")
+                print("Initial data sent successfully!")
             }
         })
-    }
+
+            // 2. Enviar la cantidad de archivos
+            var quantityData = UInt32(quantity).bigEndian
+            let quantityDataConverted = Data(bytes: &quantityData, count: MemoryLayout<UInt32>.size)
+
+            // 3. Enviar nombre del archivo + cantidad de archivos
+            let initialData = quantityDataConverted
+        
+            connection.send(content: initialData, completion: .contentProcessed { error in
+                if let error = error {
+                    print("Failed to send initial data (name + quantity): \(error)")
+                } else {
+                    print("Initial data sent successfully!")
+                }
+            })
+
+            // 4. Enviar los datos del archivo en bloques de 8192 bytes
+            let chunkSize = 8192
+            var offset = 0
+            let totalSize = imageData.count
+            
+            while offset < totalSize {
+                let chunk = imageData.subdata(in: offset..<min(offset + chunkSize, totalSize))
+                
+                connection.send(content: chunk, completion: .contentProcessed { error in
+                    if let error = error {
+                        print("Failed to send image chunk: \(error)")
+                    } else {
+                        print("Image chunk sent successfully!")
+                    }
+                })
+                
+                offset += chunkSize
+            }
+        }
 }
 
 #Preview {
